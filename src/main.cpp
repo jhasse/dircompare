@@ -15,6 +15,8 @@ std::vector<std::string> ignore_list{
     "LG Smart TV",
     "FOUND.000",
     "FOUND.001",
+    "FOUND.002",
+    "FOUND.003",
 };
 
 class Main {

@@ -155,8 +155,17 @@ int main(int argc, char *argv[]) {
   fs::path dir1 = argv[1];
   fs::path dir2 = argv[2];
   Main m(dir1, dir2);
-  fs::directory_iterator it1{m.dir1};
-  fs::directory_iterator it2{m.dir2};
+  std::error_code err;
+  fs::directory_iterator it1{m.dir1, err};
+  if (err) {
+      cerr << "error: " << argv[1] << ": " << err << endl;
+      return EXIT_FAILURE;
+  }
+  fs::directory_iterator it2{m.dir2, err};
+  if (err) {
+      cerr << "error: " << argv[2] << ": " << err << endl;
+      return EXIT_FAILURE;
+  }
 
   m.compare(it1, it2);
   m.compareContents();

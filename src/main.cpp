@@ -9,14 +9,17 @@
 namespace fs = std::filesystem;
 
 std::vector<std::string> ignore_list{
-    "System Volume Information",
-    "$RECYCLE.BIN",
+    ".Spotlight-V100",
+    ".TemporaryItems",
     ".Trash-1000",
-    "LG Smart TV",
+    ".Trashes",
+    "$RECYCLE.BIN",
     "FOUND.000",
     "FOUND.001",
     "FOUND.002",
     "FOUND.003",
+    "LG Smart TV",
+    "System Volume Information",
 };
 
 class Main {

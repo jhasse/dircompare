@@ -1,12 +1,185 @@
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <set>
-#include <vector>
+#include <map>
 #include <optional>
+#include <set>
+#include <sstream>
+#include <vector>
 
 namespace fs = std::filesystem;
+
+namespace {
+
+constexpr uint64_t kFnvOffset = 1469598103934665603ull;
+constexpr uint64_t kFnvPrime = 1099511628211ull;
+
+uint64_t fnv1a(const std::string& s) {
+	uint64_t h = kFnvOffset;
+	for (unsigned char c : s) {
+		h ^= c;
+		h *= kFnvPrime;
+	}
+	return h;
+}
+
+std::string toHex(uint64_t v) {
+	static const char digits[] = "0123456789abcdef";
+	std::string s(16, '0');
+	for (int i = 15; i >= 0; --i) {
+		s[i] = digits[v & 0xF];
+		v >>= 4;
+	}
+	return s;
+}
+
+// Directory under which per-directory hash caches are stored, honouring
+// XDG_CONFIG_HOME / HOME (and APPDATA on Windows), falling back to a temp dir.
+fs::path configDir() {
+	if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) {
+		return fs::path(xdg) / "dircompare";
+	}
+	if (const char* home = std::getenv("HOME"); home && *home) {
+		return fs::path(home) / ".config" / "dircompare";
+	}
+#ifdef _WIN32
+	if (const char* appdata = std::getenv("APPDATA"); appdata && *appdata) {
+		return fs::path(appdata) / "dircompare";
+	}
+#endif
+	std::error_code ec;
+	return fs::temp_directory_path(ec) / "dircompare";
+}
+
+// Caches file content hashes for a single root directory, keyed by relative
+// path. An entry is reused only when the file's modification time and size are
+// unchanged, so a second run skips re-reading unmodified files.
+class HashCache {
+public:
+	explicit HashCache(const fs::path& dir) {
+		std::error_code ec;
+		root = fs::weakly_canonical(dir, ec);
+		if (ec) {
+			root = fs::absolute(dir, ec);
+		}
+		cacheFile = configDir() / (toHex(fnv1a(root.string())) + ".cache");
+		load();
+	}
+
+	~HashCache() {
+		if (dirty) {
+			save();
+		}
+	}
+
+	// Returns the content hash of `rel` (relative to the root) and writes its
+	// size to `sizeOut`, or nullopt if the file can't be read.
+	std::optional<uint64_t> hashOf(const std::string& rel, uint64_t& sizeOut) {
+		const fs::path full = root / rel;
+		std::error_code ec;
+		const uint64_t size = fs::file_size(full, ec);
+		if (ec) {
+			return std::nullopt;
+		}
+		const auto writeTime = fs::last_write_time(full, ec);
+		if (ec) {
+			return std::nullopt;
+		}
+		const int64_t mtime = writeTime.time_since_epoch().count();
+		sizeOut = size;
+
+		if (auto it = entries.find(rel);
+		    it != entries.end() && it->second.mtime == mtime && it->second.size == size) {
+			return it->second.hash; // cache hit
+		}
+
+		const auto hash = computeHash(full);
+		if (!hash) {
+			return std::nullopt;
+		}
+		entries[rel] = { mtime, size, *hash };
+		dirty = true;
+		return *hash;
+	}
+
+private:
+	struct Entry {
+		int64_t mtime;
+		uint64_t size;
+		uint64_t hash;
+	};
+
+	static std::optional<uint64_t> computeHash(const fs::path& p) {
+		std::ifstream f(p, std::ifstream::binary);
+		if (f.fail()) {
+			return std::nullopt;
+		}
+		uint64_t h = kFnvOffset;
+		char buf[1 << 16];
+		while (f) {
+			f.read(buf, sizeof(buf));
+			const std::streamsize n = f.gcount();
+			for (std::streamsize i = 0; i < n; ++i) {
+				h ^= static_cast<unsigned char>(buf[i]);
+				h *= kFnvPrime;
+			}
+		}
+		if (f.bad()) {
+			return std::nullopt;
+		}
+		return h;
+	}
+
+	void load() {
+		std::ifstream in(cacheFile);
+		if (!in) {
+			return;
+		}
+		std::string line;
+		while (std::getline(in, line)) {
+			if (line.empty() || line[0] == '#') {
+				continue;
+			}
+			std::istringstream iss(line);
+			int64_t mtime;
+			uint64_t size;
+			uint64_t hash;
+			if (!(iss >> mtime >> size >> hash)) {
+				continue;
+			}
+			std::string rel;
+			std::getline(iss, rel);
+			if (!rel.empty() && rel[0] == ' ') {
+				rel.erase(0, 1);
+			}
+			entries[rel] = { mtime, size, hash };
+		}
+	}
+
+	void save() const {
+		std::error_code ec;
+		fs::create_directories(cacheFile.parent_path(), ec);
+		std::ofstream out(cacheFile, std::ios::trunc);
+		if (!out) {
+			return;
+		}
+		out << "# dircompare cache v1 " << root.string() << "\n";
+		for (const auto& [rel, e] : entries) {
+			out << e.mtime << ' ' << e.size << ' ' << e.hash << ' ' << rel << "\n";
+		}
+	}
+
+	fs::path root;
+	fs::path cacheFile;
+	std::map<std::string, Entry> entries;
+	bool dirty = false;
+};
+
+} // namespace
 
 std::vector<std::string> ignore_list{
     ".Spotlight-V100",
@@ -88,61 +261,38 @@ public:
   };
 
   void compareContents() const {
-    size_t i = 0;
-    std::chrono::steady_clock::time_point begin =
-        std::chrono::steady_clock::now();
-    int64_t bytesProcessed = 0;
-    for (const auto &file : files) {
-      ++i;
-      std::cout << i << " / " << files.size() << " ("
-                << (i * 100 / files.size()) << " %)";
-      if (const auto bytes = compareFiles(dir1 / file, dir2 / file)) {
-          bytesProcessed += *bytes;
-          auto secondsPassed = std::chrono::duration_cast<std::chrono::seconds>(
-                                   std::chrono::steady_clock::now() - begin)
-                                   .count();
-          if (secondsPassed != 0) {
-            std::cout << " " << (bytesProcessed / 1024 / 1024 / 1024)
-                      << " GB processed ("
-                      << (double(bytesProcessed) / secondsPassed / 1024.0 /
-                          1024.0)
-                      << " MB/s)";
-          }
-          std::cout << std::endl;
-      } else {
-          std::cout << "\nFile content differs:\n  " << dir1.string() << "\n  "
-                    << dir2.string() << "\n    " << file << std::endl;
-          break;
-      }
-    }
+	  HashCache cache1{ dir1 };
+	  HashCache cache2{ dir2 };
+	  size_t i = 0;
+	  std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+	  int64_t bytesProcessed = 0;
+	  for (const auto& file : files) {
+		  ++i;
+		  std::cout << i << " / " << files.size() << " (" << (i * 100 / files.size()) << " %)";
+		  uint64_t size1 = 0;
+		  uint64_t size2 = 0;
+		  const auto hash1 = cache1.hashOf(file, size1);
+		  const auto hash2 = cache2.hashOf(file, size2);
+		  if (hash1 && hash2 && size1 == size2 && *hash1 == *hash2) {
+			  bytesProcessed += size1;
+			  auto secondsPassed = std::chrono::duration_cast<std::chrono::seconds>(
+				                       std::chrono::steady_clock::now() - begin)
+				                       .count();
+			  if (secondsPassed != 0) {
+				  std::cout << " " << (bytesProcessed / 1024 / 1024 / 1024) << " GB processed ("
+					        << (double(bytesProcessed) / secondsPassed / 1024.0 / 1024.0)
+					        << " MB/s)";
+			  }
+			  std::cout << std::endl;
+		  } else {
+			  std::cout << "\nFile content differs:\n  " << dir1.string() << "\n  " << dir2.string()
+				        << "\n    " << file << std::endl;
+			  break;
+		  }
+	  }
   }
 
-private:
-  std::optional<size_t> compareFiles(const fs::path &p1,
-                                     const fs::path &p2) const {
-    std::ifstream f1(p1, std::ifstream::binary | std::ifstream::ate);
-    std::ifstream f2(p2, std::ifstream::binary | std::ifstream::ate);
-
-    if (f1.fail() || f2.fail()) {
-      return std::nullopt; // file problem
-    }
-
-    size_t file_size = f1.tellg();
-    if (file_size != f2.tellg()) {
-      return std::nullopt; // size mismatch
-    }
-
-    // seek back to beginning and use std::equal to compare contents
-    f1.seekg(0, std::ifstream::beg);
-    f2.seekg(0, std::ifstream::beg);
-    if (std::equal(std::istreambuf_iterator<char>(f1.rdbuf()),
-                   std::istreambuf_iterator<char>(),
-                   std::istreambuf_iterator<char>(f2.rdbuf()))) {
-      return file_size;
-    }
-    return std::nullopt;
-  }
-
+  private:
   std::vector<std::string> files;
 };
 

@@ -181,7 +181,7 @@ private:
 
 } // namespace
 
-std::vector<std::string> ignore_list{
+std::vector<std::string> ignore_dirs{
     ".Spotlight-V100",
     ".TemporaryItems",
     ".Trash-1000",
@@ -195,6 +195,13 @@ std::vector<std::string> ignore_list{
     "System Volume Information",
 };
 
+std::vector<std::string> ignore_filenames{
+	".DS_Store",
+	"Thumbs.db",
+	"._.DS_Store",
+	"._Thumbs.db",
+};
+
 class Main {
 public:
   fs::path dir1;
@@ -206,8 +213,9 @@ public:
   void compare(fs::directory_iterator dir_it1, fs::directory_iterator dir_it2) {
     std::set<std::string> entries1;
     for (const auto& entry : dir_it1) {
-      if (std::find(ignore_list.begin(), ignore_list.end(),
-                    entry.path().lexically_relative(dir1)) != ignore_list.end()) {
+      const auto& list = entry.is_directory() ? ignore_dirs : ignore_filenames;
+      if (std::find(list.begin(), list.end(),
+                    entry.path().filename()) != list.end()) {
         std::cout << "Ignoring " << entry << std::endl;
         continue;
       }
@@ -215,8 +223,9 @@ public:
     }
     std::set<std::string> entries2;
     for (const auto& entry : dir_it2) {
-      if (std::find(ignore_list.begin(), ignore_list.end(),
-                    entry.path().lexically_relative(dir2)) != ignore_list.end()) {
+      const auto& list = entry.is_directory() ? ignore_dirs : ignore_filenames;
+      if (std::find(list.begin(), list.end(),
+                    entry.path().filename()) != list.end()) {
         std::cout << "Ignoring " << entry << std::endl;
         continue;
       }

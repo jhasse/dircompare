@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -12,6 +14,11 @@
 #include <vector>
 
 namespace fs = std::filesystem;
+
+namespace {
+std::atomic<bool> g_interrupted{false};
+void sigintHandler(int) { g_interrupted = true; }
+} // namespace
 
 namespace {
 
@@ -276,6 +283,7 @@ public:
 	  std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 	  int64_t bytesProcessed = 0;
 	  for (const auto& file : files) {
+		  if (g_interrupted) { break; }
 		  ++i;
 		  std::cout << i << " / " << files.size() << " (" << (i * 100 / files.size()) << " %)";
 		  uint64_t size1 = 0;
@@ -308,6 +316,8 @@ public:
 
 int main(int argc, char *argv[]) {
   using namespace std;
+
+  std::signal(SIGINT, sigintHandler);
 
   if (argc < 3) {
     cerr << "error: dir_a/ dir_b/" << endl;

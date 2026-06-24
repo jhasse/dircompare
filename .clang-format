@@ -1,0 +1,18 @@
+BasedOnStyle: LLVM
+
+AccessModifierOffset: -4
+AlignTrailingComments: false
+IndentWidth: 4
+TabWidth: 4
+UseTab: ForIndentation
+AllowShortIfStatementsOnASingleLine: true
+ColumnLimit: 100
+ConstructorInitializerIndentWidth: 0
+AllowShortFunctionsOnASingleLine: None
+PointerAlignment: Left
+SortIncludes: false
+ConstructorInitializerAllOnOneLineOrOnePerLine: false
+SpaceBeforeParens: ControlStatements
+SpacesInContainerLiterals: true
+Cpp11BracedListStyle: false
+LambdaBodyIndentation: OuterScope
